@@ -1,0 +1,184 @@
+---
+title: "Practical Machine Learning - Human Activity Recognition Project"
+author: "Christian Lenaburg"
+date: "07/26/2014"
+output: html_document
+---
+
+##Executive Summary
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self-movement: a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it.  The 6 participants of the study were asked to perform barbell lifts correctly and incorrectly in 5 different ways: one "correct" curl, labeled "A", and four "incorrect" curls labelled "B" through "E":
+
+- A: correct unilateral dumbbell biceps curl
+- B: throwing the elbows to the front
+- C: lifting the dumbbell only halfway
+- D: lowering the dumbbell only halfway
+- E: throwing the hips to the front
+
+The subjects wore sensors on their arms, hands, waist, and on the weight itself to capture the data found [here](http://groupware.les.inf.puc-rio.br/har). The data set contains 160 features from the subjects performing weight-lifting exercises. In this project, our goal will be to use the data from accelerometers to us a machine learning algorithm to predict whether the lifts were performed correctly or incorrectly.
+
+##Methodology
+
+The methodology used for this project goes through the following process, which will be detailed in the corresponding sections below. The caret package was used extensively for creating cross-validate subsets, for training the model, and for generating predictions and confusion matrices.
+
+1.	Cleaned the data set
+2.  Split the data
+3.	Build the model
+4.	Test the model
+5.	Predict results
+
+Lets start with loading the raw training and test data. Assumption: they are already in the project folder. 
+```{r}
+rawTrainingData <- read.csv(file = "C:/Users/Christian/Desktop/Coursera/datasciencecoursera/PML/pml-training.csv", 
+                   header = TRUE,
+                   sep = ",",
+                   row.names = NULL,
+                   na.strings = c("NA",""),
+                   stringsAsFactors = FALSE
+                   ) 
+
+rawValidateData <- read.csv(file = "C:/Users/Christian/Desktop/Coursera/datasciencecoursera/PML/pml-testing.csv", 
+                   header = TRUE,
+                   sep = ",",
+                   row.names = NULL,
+                   na.strings = c("NA",""," "),
+                   stringsAsFactors = FALSE
+                   ) 
+```
+
+```{r message=FALSE}
+library(caret)
+library(randomForest)
+library(gbm)
+```
+
+We can see here that there are 19,622 observations of the 160 feature variables in the training data set.
+
+```{r}
+dim(rawTrainingData)
+dim(rawValidateData)
+```
+
+
+##Cleaning the Data Set
+
+1. all columns with NA values will be removed. Analysis has shown that there are either 0 or 98% NAs values in particular columns. Because 98% is nearly 100% of the size of the training data set we will remove those columns completely.
+
+```{r}
+
+countNAs <- apply(rawTrainingData,2,function(x) {sum(is.na(x))}) 
+
+table(round(countNAs/nrow(rawTrainingData),2))
+
+rawTrainingData <- rawTrainingData[ , -which(names(rawTrainingData) %in% names(countNAs)[countNAs>0])]
+
+rawValidateData <- rawValidateData[ , -which(names(rawValidateData) %in% names(countNAs)[countNAs>0])]
+
+```
+
+2. Notice that the first seven columns are time and index information, which are not of interest in building our machine learning model, so we should get rid of them.
+
+```{r}
+cleanTrainingData <- rawTrainingData[, !grepl("X|user_name|timestamp|window", colnames(rawTrainingData))]
+cleanValidateData <- rawValidateData[, !grepl("X|user_name|timestamp|window", colnames(rawValidateData))]
+```
+
+We are left with  `r ncol(cleanTrainingData)-1` predictors for the variable Classe.
+
+```{r}
+dim(cleanTrainingData)
+dim(cleanValidateData)
+```
+
+##Splitting the Data Set
+
+The function createDataPartition() can be used to create a stratified random sample of the data into training and testing sets. In this project, we create a single 75%/25% split of the data.
+```{r}
+set.seed(3599)
+inTraining  <- createDataPartition(cleanTrainingData$classe, p = 0.75, list = FALSE)
+cv.training <- cleanTrainingData[ inTraining, ]
+cv.testing  <- cleanTrainingData[-inTraining, ]
+cv.training$classe <- as.factor(cv.training$classe)
+cv.testing$classe <- as.factor(cv.testing$classe)
+```
+
+Now let us look at using principal component analysis (PCA).  First let us look at how correlated our variables are.
+
+```{r}
+train_corr <- cor(cleanTrainingData[, -53])
+library(corrplot)
+par(mar = c(0,0,0,0))
+corrplot(train_corr, method = "color")
+```
+
+As can be seen in the above figure several of our variables (those in dark blue/red) are highly correlated.  As such we will create separate data sets using PCA.
+
+```{r}
+lastFeature <- dim(cleanTrainingData)[2]
+preProc <- preProcess(cleanTrainingData[,-lastFeature],method="pca")
+cv.training.PC <- predict(preProc, cv.training[,-lastFeature])
+cv.testing.PC <- predict(preProc, cv.testing[,-lastFeature])
+```
+
+## Building the Model
+
+Since our dependent variable classe is categorical, I decided to choose two algorithms to build our model, a gradient boosted machine (**gbm**) and random forest (**rf**).  These two algorithms will be run on the data sets that have not had PCA run on them, as well as on those that have had PCA run on them.
+
+```{r modeling, results='hide', message=FALSE, warning=FALSE, cache=TRUE}
+set.seed(3599)
+fitControl <- trainControl(method = "repeatedcv", number = 2, repeats = 2)
+
+model.Fit.RF <- train(classe ~ ., data = cv.training, method = "rf", trControl = fitControl)
+model.Fit.RF.PC <- train(cv.training$classe ~ ., data = cv.training.PC, method = "rf", trControl = fitControl)
+model.Fit.GBM <- train(classe ~ ., data = cv.training, method = "gbm", trControl = fitControl)
+model.Fit.GBM.PC <- train(cv.training$classe ~ ., data = cv.training.PC, method = "gbm", trControl = fitControl)
+```
+
+```{r}
+model.Fit.RF
+model.Fit.RF.PC
+model.Fit.GBM
+model.Fit.GBM.PC
+
+```
+
+##Testing the Model
+
+Now that we have built our four models we will test them, against the test data sets we created earlier, so that we can calculate the out of sample error.
+
+```{r}
+conMat.Fit.RF <- confusionMatrix(cv.testing$classe, predict(model.Fit.RF, cv.testing))
+conMat.Fit.RF.PC <- confusionMatrix(cv.testing$classe, predict(model.Fit.RF.PC, cv.testing.PC))
+conMat.Fit.GBM <- confusionMatrix(cv.testing$classe, predict(model.Fit.RF, cv.testing))
+conMat.Fit.GBM.PC <- confusionMatrix(cv.testing$classe, predict(model.Fit.RF.PC, cv.testing.PC))
+
+
+paste0(round((1-conMat.Fit.RF$overall[[1]])*100,2),"%")
+paste0(round((1-conMat.Fit.RF.PC$overall[[1]])*100,2),"%")
+paste0(round((1-conMat.Fit.GBM$overall[[1]])*100,2),"%")
+paste0(round((1-conMat.Fit.GBM.PC$overall[[1]])*100,2),"%")
+
+```
+
+As we can see both the GBM and RF models perform equally well.  However, the models that are not run on the principal component data sets perform better then those not run with PCA done.  Using PCA can lose some spatial information which is important for classification, so the classification accuracy decreases.  
+
+##Predict Results
+
+Here we create the prediction results.  These are tested against course's data set trying to quantify whether the exercise was done correctly or not.
+
+```{r}
+answers = predict(model.Fit.GBM, rawValidateData)
+
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+
+pml_write_files(answers)
+```
+
+This model was able to accurately predict all 20 observations from the data set.
+
